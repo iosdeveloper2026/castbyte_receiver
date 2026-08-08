@@ -1,277 +1,144 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-  <title>CastByte Receiver</title>
+<meta charset="utf-8">
+<title>CastByte Receiver</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    background: #07090D;
+    overflow: hidden;
+  }
 
-  <!--
-    Screen Mirroring CastByte — Google Cast Web Receiver
-    Cast Console App ID : EC621E90
-    Receiver URL        : https://iosdeveloper2026.github.io/castbyte_receiver/
-    iOS sender bundle   : com.app.Screen-Mirroring-CastByte
-    Custom namespace    : urn:x-cast:com.app.screenmirroring.castbyte
-  -->
+  #whiteboard-canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    display: none;
+  }
 
-  <!-- Google Cast Application Framework (CAF) receiver -->
-  <script src="https://www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
-  <!-- YouTube IFrame Player API — YouTube's official player, used unmodified -->
-  <script src="https://www.youtube.com/iframe_api"></script>
+  #pdf-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: #07090D;
+    display: none;
+    align-items: center;
+    justify-content: center;
+  }
 
-  <!-- Inter, to match the iOS app's bundled typeface. Falls back to the TV's system
-       sans if fonts.googleapis.com is unreachable — the idle screen still renders fine. -->
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;900&display=swap" rel="stylesheet">
-
-  <style>
-    /* Brand tokens, lifted from smc_Assets.xcassets/0. COLOR */
-    :root {
-      --brand:     #C2FFA1;  /* appThemeColor */
-      --bg:        #060708;  /* appBg         */
-      --title:     #FFFFFF;  /* ondTitle      */
-      --subtitle:  #BEBEBE;  /* ondSubTitle   */
-      --font: 'Inter', -apple-system, 'Helvetica Neue', Roboto, Arial, sans-serif;
-    }
-
-    html, body {
-      width: 100%; height: 100%; margin: 0; padding: 0;
-      background: var(--bg); overflow: hidden;
-      font-family: var(--font);
-    }
-
-    /* Media surface — fills the screen when casting. Transparent so the idle
-       branding layer behind it shows through until real media loads. */
-    cast-media-player {
-      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-      --background-color: transparent;
-      --splash-image: none;
-    }
-
-    /* ---------- Idle / branding layer (z-index 5, below everything) ---------- */
-    /* Visible whenever nothing is playing. Hidden the moment media or YouTube starts. */
-    #idle-layer {
-      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-      z-index: 5; background: var(--bg);
-      display: flex; flex-direction: column;
-      align-items: center; justify-content: center;
-      /* TV overscan safe area — keeps branding off the bezel on older sets. */
-      padding: 5vh 5vw; box-sizing: border-box;
-      transition: opacity .45s ease;
-    }
-    #idle-layer.hidden { opacity: 0; pointer-events: none; }
-
-    /* Soft brand glow behind the mark */
-    #idle-layer::before {
-      content: ''; position: absolute; top: 50%; left: 50%;
-      width: 70vh; height: 70vh; transform: translate(-50%, -58%);
-      background: radial-gradient(circle, rgba(194,255,161,.13) 0%, rgba(194,255,161,0) 62%);
-      pointer-events: none;
-    }
-
-    .brand { position: relative; text-align: center; }
-
-    /* ▼▼ LOGO — to use real artwork instead, drop logo.png next to this file and
-           replace the whole <svg> block below with:
-           <img class="logo" src="logo.png" alt="CastByte">                      ▼▼ */
-    .logo {
-      width: 21vh; height: 21vh; display: block; margin: 0 auto 4.2vh;
-      filter: drop-shadow(0 0 26px rgba(194,255,161,.34));
-    }
-    /* Outer cast wave breathes slowly to signal "ready and listening" */
-    @keyframes wave { 0%,100% { opacity:.32 } 50% { opacity:1 } }
-    .wave-outer { animation: wave 2.6s ease-in-out infinite; }
-    .wave-mid   { animation: wave 2.6s ease-in-out infinite .35s; }
-
-    .app-name {
-      font-size: 8.4vh; font-weight: 900; letter-spacing: -.028em;
-      color: var(--title); margin: 0; line-height: 1;
-    }
-    .app-name em { font-style: normal; color: var(--brand); }
-
-    .tagline {
-      font-size: 2.9vh; font-weight: 600; letter-spacing: .34em;
-      text-transform: uppercase; color: var(--brand);
-      margin: 2.4vh 0 0;
-    }
-
-    .status {
-      font-size: 2.4vh; font-weight: 400; color: var(--subtitle);
-      margin: 5.5vh 0 0;
-    }
-    .status .dot {
-      display: inline-block; width: 1.05vh; height: 1.05vh;
-      border-radius: 50%; background: var(--brand);
-      margin-right: 1.1vh; vertical-align: middle;
-      animation: wave 1.8s ease-in-out infinite;
-    }
-
-    /* ---------- YouTube layer (z-index 10, above everything) ---------- */
-    /* Shown only while a YouTube video is playing. Black backing is intentional so
-       video letterboxing looks right. Nothing is ever drawn on top of this layer:
-       the YouTube API Required Minimum Functionality forbids overlays, frames or
-       other visual elements in front of any part of the player, including its
-       controls — which is why the idle layer sits at a lower z-index AND is
-       explicitly hidden before a YouTube video starts. */
-    #yt-layer {
-      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-      background: #000; display: none; z-index: 10;
-    }
-    #yt-player { width: 100%; height: 100%; border: 0; }
-  </style>
+  #pdf-canvas {
+    max-width: 100%;
+    max-height: 100%;
+  }
+</style>
 </head>
 <body>
 
-  <!-- Idle branding: app logo + name, shown whenever nothing is casting -->
-  <div id="idle-layer">
-    <div class="brand">
-      <!-- ▼ SWAP POINT: replace this <svg> with <img class="logo" src="logo.png" alt="CastByte"> -->
-      <svg class="logo" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="CastByte">
-        <!-- screen -->
-        <rect x="14" y="26" width="100" height="68" rx="13"
-              stroke="#C2FFA1" stroke-width="7"/>
-        <!-- cast waves, emanating from the bottom-left of the screen -->
-        <circle cx="34" cy="74" r="5" fill="#C2FFA1"/>
-        <path class="wave-mid"   d="M34 59 A15 15 0 0 1 49 74"
-              stroke="#C2FFA1" stroke-width="7" stroke-linecap="round"/>
-        <path class="wave-outer" d="M34 48 A26 26 0 0 1 60 74"
-              stroke="#C2FFA1" stroke-width="7" stroke-linecap="round"/>
-      </svg>
-      <!-- ▲ SWAP POINT -->
+<canvas id="whiteboard-canvas"></canvas>
 
-      <h1 class="app-name">Cast<em>Byte</em></h1>
-      <p class="tagline">Screen Mirroring</p>
-      <p class="status"><span class="dot"></span>Ready to cast</p>
-    </div>
-  </div>
+<div id="pdf-overlay">
+  <canvas id="pdf-canvas"></canvas>
+</div>
 
-  <!-- Plays everything that arrives via loadMedia(): gallery videos, IPTV streams, photos -->
-  <cast-media-player></cast-media-player>
+<script src="https://www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
 
-  <!-- Plays YouTube via YouTube's official IFrame player. The player keeps its own native
-       playbar (controls: 1) and the app never sends transport commands, so YouTube's player
-       controls are the only ones the viewer ever sees (YouTube API ToS III.C.1). -->
-  <div id="yt-layer"><div id="yt-player"></div></div>
+<script type="module">
+  import * as pdfjsLib from 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/6.1.200/pdf.min.mjs';
+  pdfjsLib.GlobalWorkerOptions.workerSrc =
+    'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/6.1.200/pdf.worker.min.mjs';
 
-  <script>
-    // MUST match the iOS app's custom channel namespace EXACTLY (incl. the urn:x-cast: prefix).
-    // Namespaces are case-sensitive — copy this string verbatim into the Swift sender.
-    const YT_NAMESPACE = 'urn:x-cast:com.app.screenmirroring.castbyte';
+  const PDF_NAMESPACE = 'urn:x-cast:com.app.screenmirroringcastbyte.pdf';
+  const WHITEBOARD_NAMESPACE = 'urn:x-cast:com.app.screenmirroringcastbyte.whiteboard';
 
-    const context = cast.framework.CastReceiverContext.getInstance();
-    const playerManager = context.getPlayerManager();
+  const whiteboardCanvas = document.getElementById('whiteboard-canvas');
+  const whiteboardCtx = whiteboardCanvas.getContext('2d');
 
-    const idleLayer = document.getElementById('idle-layer');
-    const ytLayer = document.getElementById('yt-layer');
-    let ytPlayer = null;       // the YouTube IFrame player instance
-    let ytReady = false;       // YouTube IFrame API finished loading
-    let pendingVideoId = null; // a play() that arrived before the API was ready
-    let currentVideoId = null; // what we last asked the player to load
+  const pdfOverlay = document.getElementById('pdf-overlay');
+  const pdfCanvas = document.getElementById('pdf-canvas');
+  const pdfCtx = pdfCanvas.getContext('2d');
 
-    // ---- Idle branding layer ---------------------------------------------------
-    function showIdle() { idleLayer.classList.remove('hidden'); }
-    function hideIdle() { idleLayer.classList.add('hidden'); }
+  function resizeWhiteboardCanvas() {
+    whiteboardCanvas.width = window.innerWidth;
+    whiteboardCanvas.height = window.innerHeight;
+  }
+  window.addEventListener('resize', resizeWhiteboardCanvas);
+  resizeWhiteboardCanvas();
 
-    // ---- Status back to the sender ---------------------------------------------
-    // Status only — the app uses this to know whether the video started or whether the
-    // owner disabled embedding, so it can fall back to the TV's YouTube app. The app
-    // never sends playback commands in return.
-    function report(event, extra) {
-      const payload = Object.assign({ event: event, videoId: currentVideoId }, extra || {});
-      try { context.sendCustomMessage(YT_NAMESPACE, undefined, payload); } catch (e) {}
-    }
+  // MARK: - PDF namespace
 
-    // ---- YouTube layer helpers -------------------------------------------------
-    function showYouTube() { hideIdle(); ytLayer.style.display = 'block'; }
-    function hideYouTube() {
-      ytLayer.style.display = 'none';
-      if (ytPlayer && ytPlayer.stopVideo) ytPlayer.stopVideo();
-      showIdle();
-    }
+  function showPdfOverlay(url) {
+    whiteboardCanvas.style.display = 'none';
+    pdfOverlay.style.display = 'flex';
+    pdfjsLib.getDocument(url).promise.then(pdf => pdf.getPage(1)).then(page => {
+      const viewport = page.getViewport({ scale: 1 });
+      const scale = Math.min(window.innerWidth / viewport.width, window.innerHeight / viewport.height);
+      const scaledViewport = page.getViewport({ scale });
+      pdfCanvas.width = scaledViewport.width;
+      pdfCanvas.height = scaledViewport.height;
+      page.render({ canvasContext: pdfCtx, viewport: scaledViewport });
+    }).catch(err => console.error('CastByte: failed to load PDF', err));
+  }
 
-    // Called automatically by the IFrame API once it has loaded.
-    window.onYouTubeIframeAPIReady = function () {
-      ytPlayer = new YT.Player('yt-player', {
-        width: '100%', height: '100%',
-        // controls: 1 keeps YouTube's own playbar on screen. Fullscreen and branding
-        // parameters are left at their defaults so nothing of YouTube's UI is suppressed.
-        playerVars: { autoplay: 1, controls: 1, rel: 0, playsinline: 1 },
-        events: {
-          onReady: function () {
-            ytReady = true;
-            if (pendingVideoId) { playYouTube(pendingVideoId); pendingVideoId = null; }
-          },
-          onStateChange: function (e) {
-            if (e.data === YT.PlayerState.PLAYING) report('playing');
-            else if (e.data === YT.PlayerState.ENDED) report('ended');
-          },
-          // 101 and 150 both mean the owner disallows playback in embedded players.
-          onError: function (e) { report('error', { code: e.data }); }
-        }
-      });
-    };
+  function hidePdfOverlay() {
+    pdfOverlay.style.display = 'none';
+  }
 
-    function playYouTube(videoId) {
-      currentVideoId = videoId;
-      // A YouTube request takes over the screen: stop any CAF media first.
-      try { playerManager.stop(); } catch (e) {}
-      showYouTube();
-      if (!ytReady || !ytPlayer) { pendingVideoId = videoId; return; }
-      ytPlayer.loadVideoById(videoId);
-      ytPlayer.playVideo();
-    }
+  // MARK: - Whiteboard namespace
 
-    // ---- Custom channel: messages from the iOS app -----------------------------
-    // Only two payloads are accepted: {action:"play",videoId} and {action:"stop"}.
-    // There are deliberately no pause/resume/seek actions — playback is controlled by
-    // YouTube's own playbar, never by the app (YouTube API ToS III.C.1).
-    // NOTE: addCustomMessageListener is the correct CAF v3 API. getCustomMessageBus
-    // does NOT exist in CAF v3 and crashes the receiver -> "Disconnected from receiver".
-    context.addCustomMessageListener(YT_NAMESPACE, function (event) {
-      // event.data may arrive as an object (JSON namespace) or a JSON string — handle both.
-      let data = event.data || {};
-      if (typeof data === 'string') {
-        try { data = JSON.parse(data); } catch (e) { data = {}; }
-      }
-      switch (data.action) {
-        case 'play':
-          if (data.videoId) playYouTube(data.videoId);
-          break;
-        case 'stop':
-          hideYouTube();
-          break;
-        default:
-          break;
+  function drawStroke(points, color, width) {
+    whiteboardCanvas.style.display = 'block';
+    if (!points || points.length === 0) return;
+
+    whiteboardCtx.strokeStyle = color || '#FFFFFF';
+    whiteboardCtx.lineWidth = width || 4;
+    whiteboardCtx.lineCap = 'round';
+    whiteboardCtx.lineJoin = 'round';
+
+    whiteboardCtx.beginPath();
+    points.forEach((point, index) => {
+      const x = point.x * whiteboardCanvas.width;
+      const y = point.y * whiteboardCanvas.height;
+      if (index === 0) {
+        whiteboardCtx.moveTo(x, y);
+      } else {
+        whiteboardCtx.lineTo(x, y);
       }
     });
+    whiteboardCtx.stroke();
+  }
 
-    // ---- CAF media: swap the branding layer out whenever real media loads ------
-    playerManager.setMessageInterceptor(
-      cast.framework.messages.MessageType.LOAD,
-      function (loadRequest) {
-        hideYouTube();   // YouTube and CAF media are mutually exclusive
-        hideIdle();      // ...and branding never sits on top of playing media
-        return loadRequest;
-      }
-    );
+  function clearWhiteboard() {
+    whiteboardCtx.clearRect(0, 0, whiteboardCanvas.width, whiteboardCanvas.height);
+  }
 
-    // Bring the branding back when playback ends or the player goes idle, so the TV
-    // never drops to a blank screen between casts.
-    playerManager.addEventListener(
-      cast.framework.events.EventType.MEDIA_FINISHED, showIdle);
-    playerManager.addEventListener(
-      cast.framework.events.EventType.PLAYER_LOADING, hideIdle);
+  // MARK: - Cast receiver bootstrap
 
-    // ---- Start the receiver ----------------------------------------------------
-    const options = new cast.framework.CastReceiverOptions();
-    // Keep the receiver alive when idle so the app can switch between YouTube and
-    // local media without the session dropping (and the branding stays up).
-    options.disableIdleTimeout = true;
-    // Advertise our custom namespace so the SDK routes the app's messages here.
-    options.customNamespaces = {};
-    options.customNamespaces[YT_NAMESPACE] = cast.framework.system.MessageType.JSON;
+  const context = cast.framework.CastReceiverContext.getInstance();
 
-    context.start(options);
-  </script>
+  context.addCustomMessageListener(PDF_NAMESPACE, event => {
+    const { action, url } = event.data;
+    if (action === 'LOAD' && url) showPdfOverlay(url);
+    else if (action === 'CLOSE') hidePdfOverlay();
+  });
+
+  context.addCustomMessageListener(WHITEBOARD_NAMESPACE, event => {
+    const { action, points, color, width } = event.data;
+    if (action === 'STROKE') drawStroke(points, color, width);
+    else if (action === 'CLEAR') clearWhiteboard();
+  });
+
+  // Enables default media playback (Photo/Video/Audio) automatically —
+  // no extra code needed for the standard CAF media pipeline.
+  context.start();
+</script>
+
 </body>
 </html>
