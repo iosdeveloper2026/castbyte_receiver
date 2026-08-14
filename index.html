@@ -2,16 +2,138 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>CastByte Receiver</title>
+<title>CastByte</title>
 <style>
   html, body {
     margin: 0;
     padding: 0;
     width: 100%;
     height: 100%;
-    background: #07090D;
+    background: #0A0A0B;
     overflow: hidden;
+    /* No web fonts on purpose — a font fetch that stalls must never be able
+       to hold up the receiver. Roboto ships on Cast devices. */
+    font-family: Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;
+    color: #FFFFFF;
   }
+
+  /* MARK: - Idle / branding screen */
+
+  #idle {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    /* TVs overscan — keep everything well inside the safe area. */
+    padding: 5vh 8vw;
+    box-sizing: border-box;
+    text-align: center;
+    background: radial-gradient(circle at 50% 42%, #16181C 0%, #0A0A0B 62%);
+  }
+
+  #logo {
+    position: relative;
+    /* Generous, because the icon artwork carries a lot of internal padding —
+       the glyph itself only fills the middle ~55% of the canvas. */
+    width: 24vh;
+    height: 24vh;
+    min-width: 140px;
+    min-height: 140px;
+    /* iOS-style squircle proportion, so it reads as the app's own icon. */
+    border-radius: 22.5%;
+    flex: none;
+  }
+
+  #logo img {
+    width: 100%;
+    height: 100%;
+    display: block;
+    border-radius: inherit;
+    /* The icon carries its own near-black ground; a hairline keeps it from
+       dissolving into the page background. */
+    border: 1px solid #232427;
+    box-sizing: border-box;
+  }
+
+  /* Radar pulse behind the logo, echoing the app's device-scan screen. */
+  #logo::before,
+  #logo::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    border: 2px solid #C5F284;
+    opacity: 0;
+    animation: pulse 2.8s ease-out infinite;
+  }
+  #logo::after { animation-delay: 1.4s; }
+
+  @keyframes pulse {
+    0%   { transform: scale(1);   opacity: 0.5; }
+    100% { transform: scale(1.5); opacity: 0; }
+  }
+
+  /* Pulse is a "waiting" cue — stop it once a sender is attached. */
+  #idle[data-connected="true"] #logo::before,
+  #idle[data-connected="true"] #logo::after {
+    animation: none;
+  }
+
+  #wordmark {
+    margin-top: 4.5vh;
+    font-size: 6.4vh;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    line-height: 1;
+  }
+
+  #wordmark .accent { color: #C5F284; }
+
+  #tagline {
+    margin-top: 1.6vh;
+    font-size: 2.4vh;
+    font-weight: 400;
+    color: #9A9CA1;
+  }
+
+  #status {
+    margin-top: 5vh;
+    display: inline-flex;
+    align-items: center;
+    gap: 1.4vh;
+    padding: 1.5vh 3.2vh;
+    border-radius: 999px;
+    background: #161719;
+    border: 1px solid #232427;
+    font-size: 2.2vh;
+    font-weight: 500;
+    color: #FFFFFF;
+    max-width: 80vw;
+  }
+
+  #status-dot {
+    width: 1.5vh;
+    height: 1.5vh;
+    min-width: 9px;
+    min-height: 9px;
+    border-radius: 50%;
+    background: #75777C;
+    flex: none;
+    transition: background 200ms linear;
+  }
+
+  #idle[data-connected="true"] #status-dot { background: #C5F284; }
+  #idle[data-state="error"] #status-dot { background: #F2624A; }
+
+  #status-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* MARK: - Casting surfaces (sit above the idle screen) */
 
   #whiteboard-canvas {
     position: absolute;
@@ -20,6 +142,7 @@
     width: 100%;
     height: 100%;
     display: none;
+    z-index: 10;
   }
 
   #pdf-overlay {
@@ -28,10 +151,11 @@
     left: 0;
     width: 100%;
     height: 100%;
-    background: #07090D;
+    background: #0A0A0B;
     display: none;
     align-items: center;
     justify-content: center;
+    z-index: 10;
   }
 
   #pdf-canvas {
@@ -42,6 +166,23 @@
 </head>
 <body>
 
+<div id="idle" data-state="loading" data-connected="false">
+  <div id="logo">
+    <!-- The app icon itself (AppIcon.appiconset, downscaled to 512px).
+         Served from this same GitHub Pages origin, not a CDN — if this host
+         were unreachable, index.html would not have loaded either. -->
+    <img src="appicon.png" alt="CastByte">
+  </div>
+
+  <div id="wordmark"><span class="accent">Cast</span>Byte</div>
+  <div id="tagline">Stream to big screen</div>
+
+  <div id="status">
+    <span id="status-dot"></span>
+    <span id="status-text">Starting up…</span>
+  </div>
+</div>
+
 <canvas id="whiteboard-canvas"></canvas>
 
 <div id="pdf-overlay">
@@ -50,20 +191,28 @@
 
 <script src="https://www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
 
-<script type="module">
-  import * as pdfjsLib from 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/6.1.200/pdf.min.mjs';
-  pdfjsLib.GlobalWorkerOptions.workerSrc =
-    'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/6.1.200/pdf.worker.min.mjs';
+<!--
+  Receiver bootstrap.
 
-  const PDF_NAMESPACE = 'urn:x-cast:com.app.screenmirroringcastbyte.pdf';
-  const WHITEBOARD_NAMESPACE = 'urn:x-cast:com.app.screenmirroringcastbyte.whiteboard';
+  This block is a CLASSIC script and deliberately contains nothing that can
+  fail to load or parse on an older Chromecast: no `type="module"`, no
+  top-level `import`, no CDN dependency. `context.start()` is what tells the
+  sender the receiver is READY — if it does not run, the sender sits on
+  "Connecting…" forever with no error callback, because the session never
+  finishes starting. Everything optional (pdf.js) is loaded lazily in the
+  separate block below, so a CDN outage or an unsupported syntax there can
+  never keep this one from starting the context.
+-->
+<script>
+  var PDF_NAMESPACE = 'urn:x-cast:com.app.screenmirroringcastbyte.pdf';
+  var WHITEBOARD_NAMESPACE = 'urn:x-cast:com.app.screenmirroringcastbyte.whiteboard';
 
-  const whiteboardCanvas = document.getElementById('whiteboard-canvas');
-  const whiteboardCtx = whiteboardCanvas.getContext('2d');
+  var whiteboardCanvas = document.getElementById('whiteboard-canvas');
+  var whiteboardCtx = whiteboardCanvas.getContext('2d');
+  var pdfOverlay = document.getElementById('pdf-overlay');
 
-  const pdfOverlay = document.getElementById('pdf-overlay');
-  const pdfCanvas = document.getElementById('pdf-canvas');
-  const pdfCtx = pdfCanvas.getContext('2d');
+  var idle = document.getElementById('idle');
+  var statusText = document.getElementById('status-text');
 
   function resizeWhiteboardCanvas() {
     whiteboardCanvas.width = window.innerWidth;
@@ -72,28 +221,30 @@
   window.addEventListener('resize', resizeWhiteboardCanvas);
   resizeWhiteboardCanvas();
 
-  // MARK: - PDF namespace
+  // MARK: - Status line
+  //
+  // `state` drives the dot color; `connected` tracks whether a sender is
+  // attached, which also stops the radar pulse.
 
-  function showPdfOverlay(url) {
-    whiteboardCanvas.style.display = 'none';
-    pdfOverlay.style.display = 'flex';
-    pdfjsLib.getDocument(url).promise.then(pdf => pdf.getPage(1)).then(page => {
-      const viewport = page.getViewport({ scale: 1 });
-      const scale = Math.min(window.innerWidth / viewport.width, window.innerHeight / viewport.height);
-      const scaledViewport = page.getViewport({ scale });
-      pdfCanvas.width = scaledViewport.width;
-      pdfCanvas.height = scaledViewport.height;
-      page.render({ canvasContext: pdfCtx, viewport: scaledViewport });
-    }).catch(err => console.error('CastByte: failed to load PDF', err));
+  function setStatus(message, state) {
+    statusText.textContent = message;
+    idle.setAttribute('data-state', state || 'idle');
   }
 
-  function hidePdfOverlay() {
-    pdfOverlay.style.display = 'none';
+  function setConnected(isConnected) {
+    idle.setAttribute('data-connected', isConnected ? 'true' : 'false');
+  }
+
+  /// Shows or hides the branding screen. It stays behind the casting
+  /// surfaces, so it only needs hiding while something is actually on screen.
+  function setIdleVisible(isVisible) {
+    idle.style.display = isVisible ? 'flex' : 'none';
   }
 
   // MARK: - Whiteboard namespace
 
   function drawStroke(points, color, width) {
+    setIdleVisible(false);
     whiteboardCanvas.style.display = 'block';
     if (!points || points.length === 0) return;
 
@@ -103,15 +254,15 @@
     whiteboardCtx.lineJoin = 'round';
 
     whiteboardCtx.beginPath();
-    points.forEach((point, index) => {
-      const x = point.x * whiteboardCanvas.width;
-      const y = point.y * whiteboardCanvas.height;
-      if (index === 0) {
+    for (var i = 0; i < points.length; i++) {
+      var x = points[i].x * whiteboardCanvas.width;
+      var y = points[i].y * whiteboardCanvas.height;
+      if (i === 0) {
         whiteboardCtx.moveTo(x, y);
       } else {
         whiteboardCtx.lineTo(x, y);
       }
-    });
+    }
     whiteboardCtx.stroke();
   }
 
@@ -119,25 +270,154 @@
     whiteboardCtx.clearRect(0, 0, whiteboardCanvas.width, whiteboardCanvas.height);
   }
 
+  // MARK: - PDF namespace
+  //
+  // The actual renderer lives in the lazy block below and publishes itself as
+  // `window.castByteRenderPdf`. If it never loaded we say so on the status
+  // line rather than throwing — the session stays alive either way.
+
+  function showPdfOverlay(url, title) {
+    whiteboardCanvas.style.display = 'none';
+    if (typeof window.castByteRenderPdf !== 'function') {
+      setIdleVisible(true);
+      setStatus('Cannot display documents on this device', 'error');
+      return;
+    }
+    setIdleVisible(false);
+    pdfOverlay.style.display = 'flex';
+    window.castByteRenderPdf(url, title);
+  }
+
+  function hidePdfOverlay() {
+    pdfOverlay.style.display = 'none';
+    setIdleVisible(true);
+    setStatus('Connected — ready to cast', 'idle');
+  }
+
   // MARK: - Cast receiver bootstrap
 
-  const context = cast.framework.CastReceiverContext.getInstance();
+  var context = cast.framework.CastReceiverContext.getInstance();
 
-  context.addCustomMessageListener(PDF_NAMESPACE, event => {
-    const { action, url } = event.data;
-    if (action === 'LOAD' && url) showPdfOverlay(url);
-    else if (action === 'CLOSE') hidePdfOverlay();
+  context.addCustomMessageListener(PDF_NAMESPACE, function (event) {
+    var data = event.data || {};
+    if (data.action === 'LOAD' && data.url) showPdfOverlay(data.url, data.title);
+    else if (data.action === 'CLOSE') hidePdfOverlay();
   });
 
-  context.addCustomMessageListener(WHITEBOARD_NAMESPACE, event => {
-    const { action, points, color, width } = event.data;
-    if (action === 'STROKE') drawStroke(points, color, width);
-    else if (action === 'CLEAR') clearWhiteboard();
+  context.addCustomMessageListener(WHITEBOARD_NAMESPACE, function (event) {
+    var data = event.data || {};
+    if (data.action === 'STROKE') drawStroke(data.points, data.color, data.width);
+    else if (data.action === 'CLEAR') clearWhiteboard();
   });
 
-  // Enables default media playback (Photo/Video/Audio) automatically —
-  // no extra code needed for the standard CAF media pipeline.
+  // Status wiring is cosmetic — never let a failure here stop `start()`.
+  try {
+    var system = cast.framework.system;
+
+    context.addEventListener(system.EventType.READY, function () {
+      setStatus('Ready to connect', 'idle');
+    });
+
+    context.addEventListener(system.EventType.SENDER_CONNECTED, function () {
+      setConnected(true);
+      setStatus('Connected — ready to cast', 'idle');
+    });
+
+    context.addEventListener(system.EventType.SENDER_DISCONNECTED, function () {
+      if (context.getSenders().length > 0) return;
+      setConnected(false);
+      setIdleVisible(true);
+      setStatus('Ready to connect', 'idle');
+    });
+
+    // Media playback draws in the framework's own player, so step the
+    // branding screen out of the way while something is playing.
+    var events = cast.framework.events.EventType;
+    var playerManager = context.getPlayerManager();
+
+    playerManager.addEventListener(events.PLAYER_LOAD_COMPLETE, function () {
+      setIdleVisible(false);
+    });
+
+    playerManager.addEventListener(events.MEDIA_FINISHED, function () {
+      setIdleVisible(true);
+      setStatus('Connected — ready to cast', 'idle');
+    });
+
+    playerManager.addEventListener(events.ERROR, function () {
+      setIdleVisible(true);
+      setStatus("That media couldn't be played", 'error');
+    });
+  } catch (err) {
+    console.error('CastByte: status wiring failed', err);
+  }
+
+  // Signal READY to the sender straight away. Enables default media playback
+  // (Photo/Video/Audio) automatically — no extra code needed for the standard
+  // CAF media pipeline.
   context.start();
+</script>
+
+<!--
+  Optional PDF support, isolated in its own script tag on purpose: if the CDN
+  is unreachable or the device's JS engine rejects the module syntax, the
+  failure is contained here and the receiver above has already started.
+-->
+<script>
+  (function () {
+    var PDF_LIB_URL = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/6.1.200/pdf.min.mjs';
+    var PDF_WORKER_URL = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/6.1.200/pdf.worker.min.mjs';
+
+    var pdfCanvas = document.getElementById('pdf-canvas');
+    var pdfCtx = pdfCanvas.getContext('2d');
+    var libPromise = null;
+
+    // Built via `new Function` so a device without dynamic `import()` throws
+    // here, at call time, instead of failing to parse this whole block.
+    function loadLib() {
+      if (!libPromise) {
+        libPromise = new Promise(function (resolve) {
+          var dynamicImport = new Function('url', 'return import(url)');
+          resolve(dynamicImport(PDF_LIB_URL));
+        }).then(function (lib) {
+          lib.GlobalWorkerOptions.workerSrc = PDF_WORKER_URL;
+          return lib;
+        }).catch(function (err) {
+          libPromise = null; // let a later message retry
+          throw err;
+        });
+      }
+      return libPromise;
+    }
+
+    window.castByteRenderPdf = function (url, title) {
+      if (typeof setStatus === 'function') {
+        setStatus(title ? 'Opening ' + title + '…' : 'Opening document…', 'idle');
+      }
+      loadLib().then(function (lib) {
+        return lib.getDocument(url).promise;
+      }).then(function (pdf) {
+        return pdf.getPage(1);
+      }).then(function (page) {
+        var viewport = page.getViewport({ scale: 1 });
+        var scale = Math.min(
+          window.innerWidth / viewport.width,
+          window.innerHeight / viewport.height
+        );
+        var scaledViewport = page.getViewport({ scale: scale });
+        pdfCanvas.width = scaledViewport.width;
+        pdfCanvas.height = scaledViewport.height;
+        return page.render({ canvasContext: pdfCtx, viewport: scaledViewport });
+      }).catch(function (err) {
+        console.error('CastByte: failed to load PDF', err);
+        document.getElementById('pdf-overlay').style.display = 'none';
+        if (typeof setIdleVisible === 'function') setIdleVisible(true);
+        if (typeof setStatus === 'function') {
+          setStatus("That document couldn't be opened", 'error');
+        }
+      });
+    };
+  })();
 </script>
 
 </body>
