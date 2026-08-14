@@ -19,9 +19,21 @@
 
   /* MARK: - Idle / branding screen */
 
+  /* MARK: - Media surface
+     The framework only ever looks this element up — it never creates one
+     (`document.getElementsByTagName("cast-media-player")[0]`). Without it in
+     the DOM there is no surface for Photo/Video/Audio to play into and
+     loadMedia silently does nothing. */
+  cast-media-player {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+  }
+
   #idle {
     position: absolute;
     inset: 0;
+    z-index: 20;
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -142,7 +154,7 @@
     width: 100%;
     height: 100%;
     display: none;
-    z-index: 10;
+    z-index: 30;
   }
 
   #pdf-overlay {
@@ -155,7 +167,7 @@
     display: none;
     align-items: center;
     justify-content: center;
-    z-index: 10;
+    z-index: 30;
   }
 
   #pdf-canvas {
@@ -165,6 +177,11 @@
 </style>
 </head>
 <body>
+
+<!-- Required for Photo/Video/Audio playback. Must be in the DOM before
+     context.start() — the framework binds to whatever it finds, and never
+     creates this element itself. -->
+<cast-media-player></cast-media-player>
 
 <div id="idle" data-state="loading" data-connected="false">
   <div id="logo">
@@ -335,6 +352,13 @@
     var events = cast.framework.events.EventType;
     var playerManager = context.getPlayerManager();
 
+    // Hide on LOADING as well as LOAD_COMPLETE: a still image finishes loading
+    // differently from a video, and the branding screen sits above the player,
+    // so missing the event would leave it covering the media.
+    playerManager.addEventListener(events.PLAYER_LOADING, function () {
+      setIdleVisible(false);
+    });
+
     playerManager.addEventListener(events.PLAYER_LOAD_COMPLETE, function () {
       setIdleVisible(false);
     });
@@ -413,7 +437,10 @@
         document.getElementById('pdf-overlay').style.display = 'none';
         if (typeof setIdleVisible === 'function') setIdleVisible(true);
         if (typeof setStatus === 'function') {
-          setStatus("That document couldn't be opened", 'error');
+          // Surface the real reason on the TV — this is the only diagnostic
+          // channel we have without attaching a remote debugger to the device.
+          var why = (err && (err.name || err.message)) ? (err.name || '') + ' ' + (err.message || '') : '';
+          setStatus(("Document failed: " + why).trim(), 'error');
         }
       });
     };
