@@ -260,7 +260,16 @@
 
   // MARK: - Whiteboard namespace
 
-  function drawStroke(points, color, width) {
+  // The sender batches touch samples once per frame, so one finger stroke
+  // arrives as a run of separate messages. Drawing each batch as its own path
+  // leaves the gap between one batch's last point and the next batch's first
+  // point unpainted — that is what shows up on the TV as a dashed line. So
+  // remember where the current stroke left off and resume from there, and only
+  // start a fresh path when the stroke id changes (a new finger-down).
+  var lastStrokeID = null;
+  var lastPoint = null;
+
+  function drawStroke(points, color, width, strokeID) {
     setIdleVisible(false);
     whiteboardCanvas.style.display = 'block';
     if (!points || points.length === 0) return;
@@ -270,21 +279,45 @@
     whiteboardCtx.lineCap = 'round';
     whiteboardCtx.lineJoin = 'round';
 
-    whiteboardCtx.beginPath();
+    var scaled = [];
     for (var i = 0; i < points.length; i++) {
-      var x = points[i].x * whiteboardCanvas.width;
-      var y = points[i].y * whiteboardCanvas.height;
-      if (i === 0) {
-        whiteboardCtx.moveTo(x, y);
-      } else {
-        whiteboardCtx.lineTo(x, y);
+      scaled.push({
+        x: points[i].x * whiteboardCanvas.width,
+        y: points[i].y * whiteboardCanvas.height
+      });
+    }
+
+    // A sender that predates stroke ids sends `undefined`; treat every batch as
+    // its own stroke rather than risk joining across a finger lift.
+    var continues = strokeID !== undefined && strokeID === lastStrokeID && lastPoint !== null;
+
+    whiteboardCtx.beginPath();
+    if (continues) {
+      whiteboardCtx.moveTo(lastPoint.x, lastPoint.y);
+      for (var j = 0; j < scaled.length; j++) {
+        whiteboardCtx.lineTo(scaled[j].x, scaled[j].y);
+      }
+    } else {
+      whiteboardCtx.moveTo(scaled[0].x, scaled[0].y);
+      for (var k = 1; k < scaled.length; k++) {
+        whiteboardCtx.lineTo(scaled[k].x, scaled[k].y);
+      }
+      // A stroke that begins with a single sample is a tap. Without an explicit
+      // zero-length segment a bare moveTo paints nothing, so the dot is lost.
+      if (scaled.length === 1) {
+        whiteboardCtx.lineTo(scaled[0].x, scaled[0].y);
       }
     }
     whiteboardCtx.stroke();
+
+    lastStrokeID = strokeID;
+    lastPoint = scaled[scaled.length - 1];
   }
 
   function clearWhiteboard() {
     whiteboardCtx.clearRect(0, 0, whiteboardCanvas.width, whiteboardCanvas.height);
+    lastStrokeID = null;
+    lastPoint = null;
   }
 
   // MARK: - PDF namespace
@@ -323,7 +356,7 @@
 
   context.addCustomMessageListener(WHITEBOARD_NAMESPACE, function (event) {
     var data = event.data || {};
-    if (data.action === 'STROKE') drawStroke(data.points, data.color, data.width);
+    if (data.action === 'STROKE') drawStroke(data.points, data.color, data.width, data.stroke);
     else if (data.action === 'CLEAR') clearWhiteboard();
   });
 
