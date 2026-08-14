@@ -157,23 +157,7 @@
     z-index: 30;
   }
 
-  #pdf-overlay {
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    background: #0A0A0B;
-    display: none;
-    align-items: center;
-    justify-content: center;
-    z-index: 30;
-  }
 
-  #pdf-canvas {
-    max-width: 100%;
-    max-height: 100%;
-  }
 </style>
 </head>
 <body>
@@ -202,9 +186,6 @@
 
 <canvas id="whiteboard-canvas"></canvas>
 
-<div id="pdf-overlay">
-  <canvas id="pdf-canvas"></canvas>
-</div>
 
 <script src="https://www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
 
@@ -216,17 +197,21 @@
   top-level `import`, no CDN dependency. `context.start()` is what tells the
   sender the receiver is READY — if it does not run, the sender sits on
   "Connecting…" forever with no error callback, because the session never
-  finishes starting. Everything optional (pdf.js) is loaded lazily in the
-  separate block below, so a CDN outage or an unsupported syntax there can
-  never keep this one from starting the context.
+  finishes starting.
+
+  PDFs used to be rendered here with pdf.js and are not any more. That could
+  never work: this page is HTTPS while the phone serves files over plain HTTP,
+  and a page-level fetch across that line is active mixed content, which
+  Chrome blocks. (Photo/video/audio are fine — they go through the device's
+  native media stack, not a fetch from this page.) The phone now rasterises
+  each page and casts it as an image, so nothing here has to parse a CDN
+  bundle the TV's browser may be too old to understand.
 -->
 <script>
-  var PDF_NAMESPACE = 'urn:x-cast:com.app.screenmirroringcastbyte.pdf';
   var WHITEBOARD_NAMESPACE = 'urn:x-cast:com.app.screenmirroringcastbyte.whiteboard';
 
   var whiteboardCanvas = document.getElementById('whiteboard-canvas');
   var whiteboardCtx = whiteboardCanvas.getContext('2d');
-  var pdfOverlay = document.getElementById('pdf-overlay');
 
   var idle = document.getElementById('idle');
   var statusText = document.getElementById('status-text');
@@ -320,39 +305,11 @@
     lastPoint = null;
   }
 
-  // MARK: - PDF namespace
-  //
-  // The actual renderer lives in the lazy block below and publishes itself as
-  // `window.castByteRenderPdf`. If it never loaded we say so on the status
-  // line rather than throwing — the session stays alive either way.
-
-  function showPdfOverlay(url, title) {
-    whiteboardCanvas.style.display = 'none';
-    if (typeof window.castByteRenderPdf !== 'function') {
-      setIdleVisible(true);
-      setStatus('Cannot display documents on this device', 'error');
-      return;
-    }
-    setIdleVisible(false);
-    pdfOverlay.style.display = 'flex';
-    window.castByteRenderPdf(url, title);
-  }
-
-  function hidePdfOverlay() {
-    pdfOverlay.style.display = 'none';
-    setIdleVisible(true);
-    setStatus('Connected — ready to cast', 'idle');
-  }
 
   // MARK: - Cast receiver bootstrap
 
   var context = cast.framework.CastReceiverContext.getInstance();
 
-  context.addCustomMessageListener(PDF_NAMESPACE, function (event) {
-    var data = event.data || {};
-    if (data.action === 'LOAD' && data.url) showPdfOverlay(data.url, data.title);
-    else if (data.action === 'CLOSE') hidePdfOverlay();
-  });
 
   context.addCustomMessageListener(WHITEBOARD_NAMESPACE, function (event) {
     var data = event.data || {};
@@ -415,70 +372,6 @@
   context.start();
 </script>
 
-<!--
-  Optional PDF support, isolated in its own script tag on purpose: if the CDN
-  is unreachable or the device's JS engine rejects the module syntax, the
-  failure is contained here and the receiver above has already started.
--->
-<script>
-  (function () {
-    var PDF_LIB_URL = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/6.1.200/pdf.min.mjs';
-    var PDF_WORKER_URL = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/6.1.200/pdf.worker.min.mjs';
-
-    var pdfCanvas = document.getElementById('pdf-canvas');
-    var pdfCtx = pdfCanvas.getContext('2d');
-    var libPromise = null;
-
-    // Built via `new Function` so a device without dynamic `import()` throws
-    // here, at call time, instead of failing to parse this whole block.
-    function loadLib() {
-      if (!libPromise) {
-        libPromise = new Promise(function (resolve) {
-          var dynamicImport = new Function('url', 'return import(url)');
-          resolve(dynamicImport(PDF_LIB_URL));
-        }).then(function (lib) {
-          lib.GlobalWorkerOptions.workerSrc = PDF_WORKER_URL;
-          return lib;
-        }).catch(function (err) {
-          libPromise = null; // let a later message retry
-          throw err;
-        });
-      }
-      return libPromise;
-    }
-
-    window.castByteRenderPdf = function (url, title) {
-      if (typeof setStatus === 'function') {
-        setStatus(title ? 'Opening ' + title + '…' : 'Opening document…', 'idle');
-      }
-      loadLib().then(function (lib) {
-        return lib.getDocument(url).promise;
-      }).then(function (pdf) {
-        return pdf.getPage(1);
-      }).then(function (page) {
-        var viewport = page.getViewport({ scale: 1 });
-        var scale = Math.min(
-          window.innerWidth / viewport.width,
-          window.innerHeight / viewport.height
-        );
-        var scaledViewport = page.getViewport({ scale: scale });
-        pdfCanvas.width = scaledViewport.width;
-        pdfCanvas.height = scaledViewport.height;
-        return page.render({ canvasContext: pdfCtx, viewport: scaledViewport });
-      }).catch(function (err) {
-        console.error('CastByte: failed to load PDF', err);
-        document.getElementById('pdf-overlay').style.display = 'none';
-        if (typeof setIdleVisible === 'function') setIdleVisible(true);
-        if (typeof setStatus === 'function') {
-          // Surface the real reason on the TV — this is the only diagnostic
-          // channel we have without attaching a remote debugger to the device.
-          var why = (err && (err.name || err.message)) ? (err.name || '') + ' ' + (err.message || '') : '';
-          setStatus(("Document failed: " + why).trim(), 'error');
-        }
-      });
-    };
-  })();
-</script>
 
 </body>
 </html>
